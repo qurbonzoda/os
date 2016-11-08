@@ -40,7 +40,7 @@ ensure_perror(true, "", "gonna write all");
     int written = 0;
     while(len - written != 0) {
         int wrote = write(fd, buf + written, len - written);
-        ensure(wrote != -1, "Coundn't write");
+        ensure_perror(wrote != -1, "Coundn't write");
         written += wrote;
     }
     ensure_perror(true, "", "wrote all");

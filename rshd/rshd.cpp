@@ -26,24 +26,29 @@ int fork_perror() {
   return pid;
 }
 
+void kill_running_daemon() {
+    int daemon_pid_fd = open(PATH_TO_DAEMON_PID, O_RDONLY);
+    ensure_perror(daemon_pid_fd != -1, "No daemon is running");
+
+    char daemon_pid_str[10];
+    int len = read(daemon_pid_fd, daemon_pid_str, 10);
+    ensure_perror(len != -1, "Can't read daemon pid");
+
+    close(daemon_pid_fd);
+
+    daemon_pid_str[len] = '\0';
+
+    int daemon_pid = atoi(daemon_pid_str);
+    std::cout << daemon_pid << std::endl;
+
+    ensure_perror(kill(daemon_pid, SIGINT) == 0, "Couldn't exit running daemon", "Running deamon is exitted");
+}
+
 int process_arg(char *arg) {
     if (strcmp(arg, EXIT_RUNNING_DAEMON) == 0) {
-        int daemon_pid_fd = open(PATH_TO_DAEMON_PID, O_RDONLY);
-        ensure_perror(daemon_pid_fd != -1, "No daemon is running");
-
-        char *daemon_pid_str[10];
-        int len = read(daemon_pid_fd, daemon_pid_str, 10);
-        ensure_perror(len != -1, "Can't read daemon pid");
-
-        close(daemon_pid_fd);
-
-        daemon_pid_str[len] = '\0';
-        int daemon_pid = atoi(daemon_pid_str);
-
-        ensure_perror(kill(daemon_pid, SIGINT) == 0, "Couldn't exit running daemon", "Running deamon is exitted");
-
+        kill_running_daemon();
         exit(0);
-    }
+;    }
     else {
         ensure_perror(strlen(arg) <= 5, "Invalid port number");
 
@@ -66,6 +71,8 @@ void clean_up(int signum) {
 }
 
 void setup_signal_handling() {
+    std::cout << "setting up signal handling" << std::endl;
+
     struct sigaction sigact;
 
     sigact.sa_handler = *clean_up;
@@ -75,7 +82,7 @@ void setup_signal_handling() {
 
   	sigact.sa_mask = block_mask; //block other signals while handling current signal
 
-    sigaction(SIGINT, &sigact, NULL);
+    ensure_perror(sigaction(SIGINT, &sigact, NULL) != -1, "Can't register SIGINT handler");
 }
 
 void change_working_dir() {
@@ -96,8 +103,10 @@ void write_daemon_pid(int daemon_pid) {
     char daemon_pid_str[10];
     sprintf(daemon_pid_str, "%d", daemon_pid);
 
-    int daemon_pid_fd = open(PATH_TO_DAEMON_PID, O_WRONLY | O_CREAT | O_TRUNC);
-    ensure(daemon_pid_fd != -1, "Couldn't create or open PATH_TO_DAEMON_PID");
+    mode_t file_permission = S_IRWXU;
+    int openning_flag = O_WRONLY | O_CREAT | O_TRUNC;
+    int daemon_pid_fd = open(PATH_TO_DAEMON_PID, openning_flag, file_permission);
+    ensure_perror(daemon_pid_fd != -1, "Couldn't create or open PATH_TO_DAEMON_PID");
 
     write_all(daemon_pid_fd, daemon_pid_str, strlen(daemon_pid_str));
 
