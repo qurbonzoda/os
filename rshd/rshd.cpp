@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <sys/socket.h>
 
 #include <iostream>
 #include <fstream>
@@ -18,13 +19,6 @@
 
 const char *EXIT_RUNNING_DAEMON = "exit";
 const char *PATH_TO_DAEMON_PID = "/tmp/rshd.pid";
-
-int fork_perror() {
-  int pid = fork();
-  ensure_perror(pid != -1, "Couldn't fork");
-
-  return pid;
-}
 
 void kill_running_daemon() {
     int daemon_pid_fd = open(PATH_TO_DAEMON_PID, O_RDONLY);
@@ -48,7 +42,7 @@ int process_arg(char *arg) {
     if (strcmp(arg, EXIT_RUNNING_DAEMON) == 0) {
         kill_running_daemon();
         exit(0);
-;    }
+    }
     else {
         ensure_perror(strlen(arg) <= 5, "Invalid port number");
 
@@ -114,15 +108,16 @@ void write_daemon_pid(int daemon_pid) {
 }
 
 void become_daemon() {
-    if (fork_perror() == 0) {
+    int fork_pid = fork();
+    ensure_perror(fork_pid != -1, "Couldn't fork");
+    if (fork_pid == 0) {
         set_new_sid();
 
         setup_signal_handling();
 
-        int pid = fork_perror();
+        int pid = fork();
+        ensure_perror(pid != -1, "Couldn't fork");
         if (pid == 0) {
-            openlog("rshd", LOG_PID | LOG_CONS, LOG_DAEMON);
-
             change_working_dir();
             close_std_io();
             umask(0);
@@ -137,13 +132,171 @@ void become_daemon() {
     }
 }
 
+class connection {
+    static const int DATA_SIZE = 4096;
+    char *data;
+    int epoll;
+public:
+    int sender;
+    int receiver;
+
+    connection(int sender, int receiver, int epoll) : sender(sender), receiver(receiver), epoll(epoll) {
+        data = new char[DATA_SIZE];
+    }
+
+    void send() {
+        read_all(sender, data, DATA_SIZE);
+        write_all(receiver, data, DATA_SIZE);
+    }
+
+    ~connection() {
+        epoll_ctl(epoll, EPOLL_CTL_DEL, sender, NULL);
+        epoll_ctl(epoll, EPOLL_CTL_DEL, receiver, NULL);
+
+        close(sender);
+        close(receiver);
+
+        delete[] data;
+    }
+}
+
+int get_server_socket(int port) {
+    int server_socket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ensure(server_socket != -1, "Couldn't create server socket");
+
+    sockaddr_in sockaddress;
+    memset(&sockaddress, 0, sizeof(sockaddress));
+    sockaddress.sin_family = AF_INET;
+    sockaddress.sin_addr.s_addr = INADDR_ANY;
+    sockaddress.sin_port = htons(port);
+
+    ensure(bind(server_socket, (sockaddr *)&sockaddress, sizeof(sockaddress)) != -1, "Couldn't bind");
+
+    return server_socket;
+}
+
+void add_server_socket_to_epoll(int epoll_fd, int server_socket) {
+    epoll_event event;
+    event.data.fd = server_socket;
+    event.events = EPOLLIN | EPOLLET | EPOLLPRI;
+
+    ensure(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_socket, &event) != -1, "Coundn't add server socket to epoll");
+}
+
+void add_conn_pty_to_epoll(epoll_fd, conn_pty) {
+    epoll_event event;
+    event.events = EPOLLIN | EPOLLRDHUP;
+    event.data.ptr = conn_pty;
+
+    ensure(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_pty->sender, &event) != -1, "Coundn't add_conn_pty_to_epoll");
+}
+
+void add_pty_conn_to_epoll(epoll_fd, pty_conn) {
+    epoll_event event;
+    event.events = EPOLLIN;
+    event.data.ptr = pty_conn;
+
+    ensure(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, pty_conn->sender, &event) != -1, "Coundn't add_pty_conn_to_epoll");
+}
+
+int accept_connection(int server_socket) {
+    sockaddr_in conn_addr;
+    socklen_t conn_addr_size = sizeof(conn_addr);
+
+    int conn_sock = accept4(server_socket, (sockaddr *)&conn_addr, &conn_addr_size);
+    ensure(conn_sock != -1, "Coundn't accept connection", "accepted a connection");
+
+    return conn_sock;
+}
+
+int open_and_setup_pty_master() {
+    int pty_master = posix_openpt(O_RDWR | O_CLOEXEC);
+    ensure(pty_master != -1, "Coundn't open pty master");
+
+    ensure(grantpt(pty_master) != -1, "Coundn't grantpt");
+    ensure(unlockpt(pty_master) != -1, "Coundn't unlockpt");
+
+    return pty_master;
+}
+
+int open_and_setup_pty_slave(int pty_master) {
+    int pty_slave = open(ptname(pty_master), O_RDWR | O_CLOEXEC);
+    ensure(pty_slave != -1, "Coundn't open pty_slave");
+
+    termois pty_slave_attr;
+    ensure(tcgetattr(pty_slave, &pty_slave_attr) != -1, "Coundn't get pty_slave attrs");
+
+    pty_slave_attr.c_lflag &= ~ECHO;
+    pty_slave_attr.c_lflag |= ISIG;
+    ensure(tcsetattr(pty_slave, TCSANOW, &pty_slave_attr) != -1, "Couldn't set pty_slave attrs");
+
+    return pty_slave;
+}
+
+
+void service_epoll_events(int epoll_fd, int server_socket) {
+    int MAX_EPOLL_EVENTS = 20;
+    epoll_event events[MAX_EPOLL_EVENTS];
+
+    while(1) {
+        int events_happened = epoll_wait(epoll_fd, events, MAX_EPOLL_EVENTS, -1);
+
+        for (size_t i = 0; i < events_happened; i++) {
+            if (events[i].data.fd == server_socket) {
+                int conn_sock = accept_connection(server_socket);
+
+                int pty_master = open_and_setup_pty_master();
+
+                connection *conn_pty = new connection(conn_sock, pty_master);
+                connection *pty_conn = new connection(pty_master, conn_sock);
+
+                add_conn_pty_to_epoll(epoll_fd, conn_pty);
+                add_pty_conn_to_epoll(epoll_fd, pty_conn);
+
+                int pid = fork();
+                ensure(pid != -1, "Couldn't fork to run sh");
+                if (pid == 0) {
+                    ensure(setsid() != -1, "Coundn't set new sid for sh");
+
+                    int pty_slave = open_and_setup_pty_slave(pty_master);
+
+                    dup2(pty_slave, STDIN_FILENO);
+                    dup2(pty_slave, STDOUT_FILENO);
+                    dup2(pty_slave, STDERR_FILENO);
+
+                    execl("/bin/sh", "sh", NULL);
+                }
+            }
+            else {
+                connection *conn = (connection *)(events[i].data.ptr);
+                if (events[i].events & EPOLLRDHUP) {
+                    delete conn;
+                }
+                else {
+                    conn->send();
+                }
+            }
+        }
+    }
+}
+
+
 int main(int argc, char **argv) {
-    std::cout << argc << std::endl;
     ensure_perror(argc == 2, "Usage: rshd <port_number>");
 
-    int listenning_port = process_arg(argv[1]);       // escapable
+    int listenning_port = process_arg(argv[1]);
 
     become_daemon();
+
+    openlog("rshd", LOG_PID | LOG_CONS, LOG_DAEMON);
+
+    int server_socket = get_server_socket(listenning_port);
+    listen(server_socket, 7);
+
+    int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    add_server_socket_to_epoll(epoll_fd, server_socket);
+
+    service_epoll_events(epoll_fd, server_socket);
 
     return 0;
 }

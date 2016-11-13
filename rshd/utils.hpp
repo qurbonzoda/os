@@ -36,12 +36,23 @@ void ensure_perror(bool is_true, const char *msg) {
 }
 
 void write_all(int fd, const char *buf, int len) {
-ensure_perror(true, "", "gonna write all");
+    ensure_perror(true, "", "gonna write all");
     int written = 0;
-    while(len - written != 0) {
+    while(len - written > 0) {
         int wrote = write(fd, buf + written, len - written);
         ensure_perror(wrote != -1, "Coundn't write");
         written += wrote;
     }
     ensure_perror(true, "", "wrote all");
+}
+
+void read_all(int fd, const char *buf, int len) {
+    ensure_perror(true, "", "gonna read all");
+    int haveRead = 0;
+    while(len - haveRead > 0) {
+        int read = write(fd, buf + haveRead, len - haveRead);
+        ensure_perror(read != -1, "Coundn't write");
+        haveRead += read;
+    }
+    ensure_perror(true, "", "read all");
 }
