@@ -10,6 +10,10 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <termios.h>
 
 #include <iostream>
 #include <fstream>
@@ -158,7 +162,7 @@ public:
 
         delete[] data;
     }
-}
+};
 
 int get_server_socket(int port) {
     int server_socket = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -183,7 +187,7 @@ void add_server_socket_to_epoll(int epoll_fd, int server_socket) {
     ensure(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_socket, &event) != -1, "Coundn't add server socket to epoll");
 }
 
-void add_conn_pty_to_epoll(epoll_fd, conn_pty) {
+void add_conn_pty_to_epoll(int epoll_fd, connection *conn_pty) {
     epoll_event event;
     event.events = EPOLLIN | EPOLLRDHUP;
     event.data.ptr = conn_pty;
@@ -191,7 +195,7 @@ void add_conn_pty_to_epoll(epoll_fd, conn_pty) {
     ensure(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_pty->sender, &event) != -1, "Coundn't add_conn_pty_to_epoll");
 }
 
-void add_pty_conn_to_epoll(epoll_fd, pty_conn) {
+void add_pty_conn_to_epoll(int epoll_fd, connection *pty_conn) {
     epoll_event event;
     event.events = EPOLLIN;
     event.data.ptr = pty_conn;
@@ -203,7 +207,7 @@ int accept_connection(int server_socket) {
     sockaddr_in conn_addr;
     socklen_t conn_addr_size = sizeof(conn_addr);
 
-    int conn_sock = accept4(server_socket, (sockaddr *)&conn_addr, &conn_addr_size);
+    int conn_sock = accept4(server_socket, (sockaddr *)&conn_addr, &conn_addr_size, SOCK_CLOEXEC);
     ensure(conn_sock != -1, "Coundn't accept connection", "accepted a connection");
 
     return conn_sock;
@@ -220,10 +224,10 @@ int open_and_setup_pty_master() {
 }
 
 int open_and_setup_pty_slave(int pty_master) {
-    int pty_slave = open(ptname(pty_master), O_RDWR | O_CLOEXEC);
+    int pty_slave = open(ptsname(pty_master), O_RDWR | O_CLOEXEC);
     ensure(pty_slave != -1, "Coundn't open pty_slave");
 
-    termois pty_slave_attr;
+    termios pty_slave_attr;
     ensure(tcgetattr(pty_slave, &pty_slave_attr) != -1, "Coundn't get pty_slave attrs");
 
     pty_slave_attr.c_lflag &= ~ECHO;
@@ -247,8 +251,8 @@ void service_epoll_events(int epoll_fd, int server_socket) {
 
                 int pty_master = open_and_setup_pty_master();
 
-                connection *conn_pty = new connection(conn_sock, pty_master);
-                connection *pty_conn = new connection(pty_master, conn_sock);
+                connection *conn_pty = new connection(conn_sock, pty_master, epoll_fd);
+                connection *pty_conn = new connection(pty_master, conn_sock, epoll_fd);
 
                 add_conn_pty_to_epoll(epoll_fd, conn_pty);
                 add_pty_conn_to_epoll(epoll_fd, pty_conn);
