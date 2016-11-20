@@ -85,13 +85,13 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
       // setup in/out
       dup2(inFD, STDIN_FILENO);
       dup2(outFD, STDOUT_FILENO);
-/*
+
       //log
       fprintf(stderr, "forked process: %d with parent process: %d\nin: %d, out: %d\nargv:\n", getpid(), getppid(), inFD, outFD);
       for (int i = 0; i < 10; i++) {
         fprintf(stderr, "%s ", ecmd->argv[i]);
       } fprintf(stderr, "\n");
-*/
+
       if (execvp(ecmd->argv[0], ecmd->argv) == -1) {
         fprintf(stderr, "error occured while execvp\n");
         exit(-1);
@@ -178,20 +178,34 @@ main(void)
     sigaction(i, &sigact, NULL);
   }
 
-  static char buf[100];
+  int BUF_SIZE = 256;
+  char buf[BUF_SIZE];
+
   int fd, r;
 
   // Read and run input commands.
-  int read = 0;
-  while((read = getcmd(buf, sizeof(buf))) >= 0){
+  int curRead = 0, already = 0;
+  while(1){
+    curRead = getcmd(buf + already, BUF_SIZE - already);
+
+    if (curRead <= 0) {
+        if (already == 0) {
+            break;
+        }
+        curRead = already;
+    } else {
+        curRead += already;
+    }
+    already = 0;
+
+    printf("%d\n", curRead);
 
     pidsLen = 0;
 
     int inFD = STDIN_FILENO;
-    int outFD = STDOUT_FILENO;
 
     char *nl = strchr(buf, '\n');
-    if (nl != NULL && nl - buf != read - 1) {
+    if (nl != NULL && nl - buf != curRead - 1) {
         int pos = nl - buf;
         buf[pos] = '\0';
         pos++;
@@ -202,16 +216,29 @@ main(void)
             break;
         }
 
-        write_all(p[1], buf + pos, read - pos);
-        safeClose(p[1]);
+        printf("[%s]\n[%s]\n", buf, buf + pos);
+
+        write_all(p[1], buf + pos, curRead - pos);
+        close(p[1]);
 
         inFD = p[0];
     }
 
-    runcmd(parsecmd(buf), inFD, outFD, inFD, outFD);
+    runcmd(parsecmd(buf), inFD, STDOUT_FILENO, STDIN_FILENO, STDOUT_FILENO);
 
     for (int i = 0; i < pidsLen; i++) {
         int pid = wait(&r);
+        printf("finished pid: %d\n", pid);
+    }
+
+    if (inFD != STDIN_FILENO) {
+        already = 0;
+        while (BUF_SIZE > already) {
+            int r = read(inFD, buf + already, BUF_SIZE - already);
+            already += r;
+            if (r <= 0) { break; }
+        }
+        close(inFD);
     }
   }
   exit(0);
