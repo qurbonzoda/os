@@ -17,6 +17,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <string>
 
 #include "utils.hpp"
 
@@ -149,8 +150,10 @@ public:
     }
 
     void send() {
-        read_all(sender, data, DATA_SIZE);
-        write_all(receiver, data, DATA_SIZE);
+        int readBytes = read_all(sender, data, DATA_SIZE);
+        std::string msg = "read " + std::to_string(readBytes);
+        ensure(readBytes != -1, "Couldn't read sent data", msg.c_str());
+        write_all(receiver, data, readBytes);
     }
 
     ~connection() {

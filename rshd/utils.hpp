@@ -46,13 +46,17 @@ void write_all(int fd, const char *buf, int len) {
     ensure_perror(true, "", "wrote all");
 }
 
-void read_all(int fd, const char *buf, int len) {
+int read_all(int fd, char *buf, int len) {
     ensure_perror(true, "", "gonna read all");
     int haveRead = 0;
     while(len - haveRead > 0) {
-        int read = write(fd, buf + haveRead, len - haveRead);
-        ensure_perror(read != -1, "Coundn't write");
-        haveRead += read;
+        int r = read(fd, buf + haveRead, len - haveRead);
+        ensure_perror(r != -1, "Coundn't write", "read some");
+        if (r == 0) {
+            break;
+        }
+        haveRead += r;
     }
+    return haveRead;
     ensure_perror(true, "", "read all");
 }
