@@ -50,16 +50,6 @@ struct cmd *parsecmd(char*);
 pid_t pids[1000];
 int pidsLen = 0;
 
-/*
-int inFDs[1000];
-int outFDs[1000];
-int fdsLen = 0;
-
-int pipesReadEnd[1000];
-int pipesWriteEnd[1000];
-int pipesLen = 0;
-*/
-
 void
 runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
 {
@@ -89,9 +79,9 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
 
     pid = fork1();
     if (pid == 0) {
-      safeClose(closingInFD);
-      safeClose(closingOutFD);
-      
+      if (inFD != closingInFD) safeClose(closingInFD);
+      if (outFD != closingOutFD) safeClose(closingOutFD);
+
       // setup in/out
       dup2(inFD, STDIN_FILENO);
       dup2(outFD, STDOUT_FILENO);
@@ -106,19 +96,9 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
         fprintf(stderr, "error occured while execvp\n");
         exit(-1);
       }
-/*  
-      //log
-      fprintf(stderr, "unreachable statement\n");
-      exit(-1);
-*/
     }
     else {
       pids[pidsLen++] = pid;
-/*
-      inFDs[fdsLen] = inFD;
-      outFDs[fdsLen] = outFD;
-      fdsLen++;
-*/
     }
 
     break;
@@ -130,14 +110,7 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
         fprintf(stderr, "error occured while open\n");
         break;
     }
-/*  
-    //log
-    fprintf(stderr, "pipe %d->%d\n", p[0], p[1]);
 
-    pipesReadEnd[pipesLen] = p[0];
-    pipesWriteEnd[pipesLen] = p[1];
-    pipesLen++;
-*/
     runcmd(pcmd->left, inFD, p[1], p[0], outFD);
     runcmd(pcmd->right, p[0], outFD, inFD, p[1]);
 
@@ -148,17 +121,37 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
   }
 }
 
+int read_all(int fd, char *buf, int buf_size) {
+    int haveRead = 0;
+    while (buf_size > haveRead) {
+        int r = read(fd, buf + haveRead, buf_size - haveRead);
+        haveRead += r;
+        if (r == 0 || strchr(buf, '\n') != NULL) { return haveRead; }
+    }
+    return haveRead;
+}
+
+void write_all(int fd, char *buf, int buf_size) {
+    int written = 0;
+    while(buf_size > written) {
+        int wrote = write(fd, buf + written, buf_size - written);
+        written += wrote;
+    }
+}
+
 int
 getcmd(char *buf, int nbuf)
 {
+    // echo -ne "cat\nhello" | ./sh
+  if (isatty(STDIN_FILENO))
+    write(STDOUT_FILENO, "$\n", 2);
 
-  if (isatty(fileno(stdin)))
-    fprintf(stdout, "$\n");
   memset(buf, 0, nbuf);
-  fgets(buf, nbuf, stdin);
+  int read = read_all(STDIN_FILENO, buf, nbuf);
   if(buf[0] == 0) // EOF
     return -1;
-  return 0;
+
+  return read;
 }
 
 
@@ -189,67 +182,49 @@ main(void)
   int fd, r;
 
   // Read and run input commands.
-  while(getcmd(buf, sizeof(buf)) >= 0){
+  int read = 0;
+  while((read = getcmd(buf, sizeof(buf))) >= 0){
 
     pidsLen = 0;
-/*
-    fdsLen = 0;
-    pipesLen = 0;
-*/
 
-    runcmd(parsecmd(buf), STDIN_FILENO, STDOUT_FILENO, STDIN_FILENO, STDOUT_FILENO);
+    int inFD = STDIN_FILENO;
+    int outFD = STDOUT_FILENO;
+
+    char *nl = strchr(buf, '\n');
+    if (nl != NULL && nl - buf != read - 1) {
+        int pos = nl - buf;
+        buf[pos] = '\0';
+        pos++;
+
+        int p[2];
+        if (pipe(p) == -1) {
+            fprintf(stderr, "error occured while pipe\n");
+            break;
+        }
+
+        write_all(p[1], buf + pos, read - pos);
+        safeClose(p[1]);
+
+        inFD = p[0];
+    }
+
+    runcmd(parsecmd(buf), inFD, outFD, inFD, outFD);
 
     for (int i = 0; i < pidsLen; i++) {
-      int pid = wait(&r);
-/*
-      int pidIndex = indexOf(pid, pids, pidsLen);
-      assert(pidIndex >= 0 && pidIndex < pidsLen);
-
-      fprintf(stderr, "closing %d->%d\n", inFDs[pidIndex], outFDs[pidIndex]);
-
-      safeClose(inFDs[pidIndex]);
-      safeClose(outFDs[pidIndex]);
-
-
-      int readEndIndex = indexOf(inFDs[pidIndex], pipesReadEnd, pipesLen);
-      int writeEndIndex = indexOf(outFDs[pidIndex], pipesWriteEnd, pipesLen);
-      readEndIndex = readEndIndex < 0 ? 999 : readEndIndex;
-      writeEndIndex = writeEndIndex < 0 ? 999 : writeEndIndex;
-
-      fprintf(stderr, "closing %d->%d\n", pipesWriteEnd[readEndIndex], pipesReadEnd[writeEndIndex]);
-
-      safeClose(pipesWriteEnd[readEndIndex]);
-      safeClose(pipesReadEnd[writeEndIndex]);
-
-      fprintf(stderr, "child with pid: %d terminated\n", pid);
-*/
+        int pid = wait(&r);
     }
   }
   exit(0);
 }
 
 int
-safeClose(int fd) 
+safeClose(int fd)
 {
   if (fd != STDIN_FILENO && fd != STDOUT_FILENO && fd != STDERR_FILENO) {
     return close(fd);
   }
-
   return -1;
 }
-
-/*
-int
-indexOf(int e, int ar[], int arLen) 
-{
-  for (int i = 0; i < arLen; i++) {
-    if (ar[i] == e) {
-      return i;
-    }
-  }
-  return -1;
-}
-*/
 
 int
 fork1(void)
