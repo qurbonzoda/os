@@ -51,7 +51,7 @@ pid_t pids[1000];
 int pidsLen = 0;
 
 void
-runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
+runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD, int closeIfNotYours)
 {
 /*
   //log
@@ -79,19 +79,20 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
 
     pid = fork1();
     if (pid == 0) {
-      if (inFD != closingInFD) safeClose(closingInFD);
-      if (outFD != closingOutFD) safeClose(closingOutFD);
+      safeClose(closingInFD);
+      safeClose(closingOutFD);
+      if (inFD != closeIfNotYours) safeClose(closeIfNotYours);
 
       // setup in/out
       dup2(inFD, STDIN_FILENO);
       dup2(outFD, STDOUT_FILENO);
-
+/*
       //log
       fprintf(stderr, "forked process: %d with parent process: %d\nin: %d, out: %d\nargv:\n", getpid(), getppid(), inFD, outFD);
       for (int i = 0; i < 10; i++) {
         fprintf(stderr, "%s ", ecmd->argv[i]);
       } fprintf(stderr, "\n");
-
+*/
       if (execvp(ecmd->argv[0], ecmd->argv) == -1) {
         fprintf(stderr, "error occured while execvp\n");
         exit(-1);
@@ -111,11 +112,15 @@ runcmd(struct cmd *cmd, int inFD, int outFD, int closingInFD, int closingOutFD)
         break;
     }
 
-    runcmd(pcmd->left, inFD, p[1], p[0], outFD);
-    runcmd(pcmd->right, p[0], outFD, inFD, p[1]);
-
-    safeClose(p[0]);
+    runcmd(pcmd->left, inFD, p[1], p[0], outFD, closeIfNotYours);
     safeClose(p[1]);
+    if (inFD != closeIfNotYours) {
+      safeClose(inFD);
+    }
+
+
+    runcmd(pcmd->right, p[0], outFD, inFD, p[1], closeIfNotYours);
+    safeClose(p[0]);
 
     break;
   }
@@ -198,7 +203,7 @@ main(void)
     }
     already = 0;
 
-    printf("%d\n", curRead);
+    //printf("%d\n", curRead);
 
     pidsLen = 0;
 
@@ -216,7 +221,7 @@ main(void)
             break;
         }
 
-        printf("[%s]\n[%s]\n", buf, buf + pos);
+        //printf("[%s]\n[%s]\n", buf, buf + pos);
 
         write_all(p[1], buf + pos, curRead - pos);
         close(p[1]);
@@ -224,11 +229,11 @@ main(void)
         inFD = p[0];
     }
 
-    runcmd(parsecmd(buf), inFD, STDOUT_FILENO, STDIN_FILENO, STDOUT_FILENO);
+    runcmd(parsecmd(buf), inFD, STDOUT_FILENO, STDIN_FILENO, STDOUT_FILENO, inFD);
 
     for (int i = 0; i < pidsLen; i++) {
         int pid = wait(&r);
-        printf("finished pid: %d\n", pid);
+        //printf("finished pid: %d\n", pid);
     }
 
     if (inFD != STDIN_FILENO) {
